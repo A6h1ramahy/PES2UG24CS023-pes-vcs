@@ -89,19 +89,18 @@ static int compare_tree_entries(const void *a, const void *b) {
 // Serialize a Tree struct into binary format for storage.
 // Caller must free(*data_out).
 // Returns 0 on success, -1 on error.
-int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
+int tree_serialize(Tree *tree, void **data_out, size_t *len_out) {
     // Estimate max size: (6 bytes mode + 1 byte space + 256 bytes name + 1 byte null + 32 bytes hash) per entry
     size_t max_size = tree->count * 296; 
     uint8_t *buffer = malloc(max_size);
     if (!buffer) return -1;
 
-    // Create a mutable copy to sort entries (Git requirement)
-    Tree sorted_tree = *tree;
-    qsort(sorted_tree.entries, sorted_tree.count, sizeof(TreeEntry), compare_tree_entries);
+    // Sort entries in-place (Git requirement)
+    qsort(tree->entries, tree->count, sizeof(TreeEntry), compare_tree_entries);
 
     size_t offset = 0;
-    for (int i = 0; i < sorted_tree.count; i++) {
-        const TreeEntry *entry = &sorted_tree.entries[i];
+    for (int i = 0; i < tree->count; i++) {
+        const TreeEntry *entry = &tree->entries[i];
         
         // Write mode and name (%o writes octal correctly for Git standards)
         int written = sprintf((char *)buffer + offset, "%o %s", entry->mode, entry->name);
@@ -134,8 +133,9 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 // Returns 0 on success, -1 on error.
 // Helper: build tree recursively for a given prefix
 static int build_tree(Index *index, const char *prefix, ObjectID *out_id) {
-    Tree tree;
-    tree.count = 0;
+    Tree *tree = malloc(sizeof(Tree));
+    if (!tree) return -1;
+    tree->count = 0;
 
     size_t prefix_len = strlen(prefix);
 
@@ -155,7 +155,11 @@ static int build_tree(Index *index, const char *prefix, ObjectID *out_id) {
 
         if (!slash) {
             // FILE in this directory
-            TreeEntry *te = &tree.entries[tree.count++];
+            if (tree->count >= MAX_TREE_ENTRIES) {
+                free(tree);
+                return -1;
+            }
+            TreeEntry *te = &tree->entries[tree->count++];
 
             te->mode = ie->mode;
             te->hash = ie->hash;
@@ -172,8 +176,8 @@ static int build_tree(Index *index, const char *prefix, ObjectID *out_id) {
 
             // Check if already added
             int exists = 0;
-            for (int j = 0; j < tree.count; j++) {
-                if (strcmp(tree.entries[j].name, dirname) == 0) {
+            for (int j = 0; j < tree->count; j++) {
+                if (strcmp(tree->entries[j].name, dirname) == 0) {
                     exists = 1;
                     break;
                 }
@@ -189,9 +193,16 @@ static int build_tree(Index *index, const char *prefix, ObjectID *out_id) {
                 snprintf(new_prefix, sizeof(new_prefix), "%s/%s", prefix, dirname);
 
             ObjectID sub_id;
-            if (build_tree(index, new_prefix, &sub_id) != 0) return -1;
+            if (build_tree(index, new_prefix, &sub_id) != 0) {
+                free(tree);
+                return -1;
+            }
 
-            TreeEntry *te = &tree.entries[tree.count++];
+            if (tree->count >= MAX_TREE_ENTRIES) {
+                free(tree);
+                return -1;
+            }
+            TreeEntry *te = &tree->entries[tree->count++];
             te->mode = MODE_DIR;
             te->hash = sub_id;
 
@@ -204,25 +215,36 @@ static int build_tree(Index *index, const char *prefix, ObjectID *out_id) {
     void *data = NULL;
     size_t len = 0;
 
-    if (tree_serialize(&tree, &data, &len) != 0) return -1;
+    if (tree_serialize(tree, &data, &len) != 0) {
+        free(tree);
+        return -1;
+    }
 
     // Write object
     if (object_write(OBJ_TREE, data, len, out_id) != 0) {
         free(data);
+        free(tree);
         return -1;
     }
 
     free(data);
+    free(tree);
     return 0;
 }
 
 
 // MAIN FUNCTION
 int tree_from_index(ObjectID *id_out) {
-    Index index;
+    Index *index = malloc(sizeof(Index));
+    if (!index) return -1;
 
-    if (index_load(&index) != 0) return -1;
+    if (index_load(index) != 0) {
+        free(index);
+        return -1;
+    }
 
     // Start from root (empty prefix)
-    return build_tree(&index, "", id_out);
+    int res = build_tree(index, "", id_out);
+    free(index);
+    return res;
 }
