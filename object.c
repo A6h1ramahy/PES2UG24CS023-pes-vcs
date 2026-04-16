@@ -146,8 +146,20 @@ if (write(fd, full, total_len) != (ssize_t)total_len) {
 
 fsync(fd);
 close(fd);
+if (rename(tmp_path, path) != 0) {
+    unlink(tmp_path);
     free(full);
-    return 0;
+    return -1;
+}
+
+int dir_fd = open(dir, O_RDONLY);
+if (dir_fd >= 0) {
+    fsync(dir_fd);
+    close(dir_fd);
+}
+
+free(full);
+return 0;
 }
 
 // Read an object from the store.
