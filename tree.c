@@ -140,7 +140,20 @@ static int build_tree(Index *index, const char *prefix, ObjectID *out_id) {
 
         if (strncmp(ie->path, prefix, prefix_len) != 0) continue;
 
-        // (logic incomplete for now)
+        const char *rest = ie->path + prefix_len;
+        if (*rest == '/') rest++;
+
+        const char *slash = strchr(rest, '/');
+
+        if (!slash) {
+            TreeEntry *te = &tree.entries[tree.count++];
+
+            te->mode = ie->mode;
+            te->hash = ie->hash;
+
+            strncpy(te->name, rest, sizeof(te->name));
+            te->name[sizeof(te->name)-1] = '\0';
+        }
     }
 
     return -1;
